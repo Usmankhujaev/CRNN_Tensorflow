@@ -1,24 +1,18 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# @Time    : 17-9-21 下午6:39
-# @Author  : Luo Yao
-# @Site    : http://github.com/TJCVRS
-# @File    : crnn_model.py
-# @IDE: PyCharm Community Edition
-"""
-Implement the crnn model mentioned in An End-to-End Trainable Neural Network for Image-based Sequence
-Recognition and Its Application to Scene Text Recognition paper
-"""
+
 from typing import Tuple
 import tensorflow as tf
 from tensorflow.contrib import rnn
-
+import tensorflow.contrib.slim as slim
 from crnn_model import cnn_basenet
+
+filter_size_10x10 =[10,10]
+filter_size_3x3 = [3,3]
+filter_size_1x1 = [1,1]
 
 
 class ShadowNet(cnn_basenet.CNNBaseModel):
     """
-        Implement the crnn model for squence recognition
+        Implement the crnn model for sequence recognition
     """
     def __init__(self, phase: str, hidden_nums: int, layers_nums: int, num_classes: int):
         """
@@ -52,44 +46,134 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         if not isinstance(value, str) or value.lower() not in ['test', 'train']:
             raise ValueError('value should be a str \'Test\' or \'Train\'')
         self.__phase = value.lower()
-
-    def __conv_stage(self, inputdata: tf.Tensor, out_dims: int, name: str=None) -> tf.Tensor:
-        """ Standard VGG convolutional stage: 2d conv, relu, and maxpool
+ 
+    def __conv_stage(self, inputdata: tf.Tensor, out_dims: int, name: str=None): #-> tf.Tensor:
+        """ Standard VGG convolutional stage: 2d conv, relu, and max_pool2d
 
         :param inputdata: 4D tensor batch x width x height x channels
         :param out_dims: number of output channels / filters
-        :return: the maxpooled output of the stage
+        :return: the max_pool2ded output of the stage
         """
-        conv = self.conv2d(inputdata=inputdata, out_channel=out_dims, kernel_size=3, stride=1, use_bias=False, name=name)
-        relu = self.relu(inputdata=conv)
-        max_pool = self.maxpooling(inputdata=relu, kernel_size=2, stride=2)
-        return max_pool
-
-    def __feature_sequence_extraction(self, inputdata: tf.Tensor) -> tf.Tensor:
+        conv = self.conv2d(inputdata=inputdata, out_channel=out_dims, kernel_size=3, stride=2, use_bias=False, name=name)
+        bn = slim.batch_norm(conv, scope = "entry_block1_batch_norm1")
+        relu = tf.nn.relu(bn, name = "entry_block1_relu1")
+        #max_pool = self.maxpooling(inputdata=relu, kernel_size=2, stride=2)
+        return relu
+#------------------------------ modified by U. S. Saidrasul -------------------------------
+    def __feature_sequence_extraction(self, inputdata: tf.Tensor): # -> Xception network
         """ Implements section 2.1 of the paper: "Feature Sequence Extraction"
 
-        :param inputdata: eg. batch*32*100*3 NHWC format
+        :param inputdata: eg. batch*64*128*1 
         :return:
         """
-        conv1 = self.__conv_stage(inputdata=inputdata, out_dims=64, name='conv1')  # batch*16*50*64
-        conv2 = self.__conv_stage(inputdata=conv1, out_dims=128, name='conv2')  # batch*8*25*128
-        conv3 = self.conv2d(inputdata=conv2, out_channel=256, kernel_size=3, stride=1, use_bias=False, name='conv3')  # batch*8*25*256
-        relu3 = self.relu(conv3) # batch*8*25*256
-        conv4 = self.conv2d(inputdata=relu3, out_channel=256, kernel_size=3, stride=1, use_bias=False, name='conv4')  # batch*8*25*256
-        relu4 = self.relu(conv4)  # batch*8*25*256
-        max_pool4 = self.maxpooling(inputdata=relu4, kernel_size=[2, 1], stride=[2, 1], padding='VALID')  # batch*4*25*256
-        conv5 = self.conv2d(inputdata=max_pool4, out_channel=512, kernel_size=3, stride=1, use_bias=False, name='conv5')  # batch*4*25*512
-        relu5 = self.relu(conv5)  # batch*4*25*512
-        bn5 = self.layerbn(inputdata=relu5, is_training=self.phase == 'train')  # batch*4*25*512
-        conv6 = self.conv2d(inputdata=bn5, out_channel=512, kernel_size=3, stride=1, use_bias=False, name='conv6')  # batch*4*25*512
-        relu6 = self.relu(conv6)  # batch*4*25*512
-        bn6 = self.layerbn(inputdata=relu6, is_training=self.phase == 'train')  # batch*4*25*512
-        max_pool6 = self.maxpooling(inputdata=bn6, kernel_size=[2, 1], stride=[2, 1])  # batch*2*25*512
-        conv7 = self.conv2d(inputdata=max_pool6, out_channel=512, kernel_size=2, stride=[2, 1], use_bias=False, name='conv7')  # batch*1*25*512
-        relu7 = self.relu(conv7)  # batch*1*25*512
-        return relu7
+        conv1 = self.__conv_stage(inputdata=inputdata, out_dims=64, name='conv1')
+        residual = slim.conv2d(conv1, 128, filter_size_1x1, stride = 2, scope = 'entry_block1_res_conv')
+        residual = slim.batch_norm(residual, scope = 'entry_block1_res_batch_norm')
+        
+        #block 2
+        layer = tf.nn.relu(conv1, name= 'entry_block2_relu1')
+        layer = slim.separable_conv2d(layer, 128, filter_size_3x3, depth_multiplier=1, scope = 'entry_block2_conv1')
+        layer = slim.batch_norm(layer, scope='entry_block2_batch_norm1')
+        
 
-    def __map_to_sequence(self, inputdata: tf.Tensor) -> tf.Tensor:
+        layer = tf.nn.relu(layer, name = 'entry_block2_relu2')
+        layer = slim.separable_conv2d(layer, 128, filter_size_3x3,depth_multiplier=1, scope='entry_block2_conv2')
+        layer = slim.batch_norm(layer, scope = 'entry_block2_batch_norm2')
+        
+        layer = slim.max_pool2d(layer, filter_size_3x3, stride = 2, padding = 'same', scope = 'entry_block2_max_pool2d')
+        
+        layer = tf.math.add(layer, residual, name='entry_block2_add')
+     
+        residual = slim.conv2d(layer,256, filter_size_1x1, stride = 2, scope = 'entry_block2_res_conv')
+        residual = slim.batch_norm(residual, scope='entry_block2_res_batch_norm')
+        print("residual",residual.shape)
+        #block 3
+        layer = tf.nn.relu(layer, name = "entry_block3_relu")
+        layer = slim.separable_conv2d(layer, 256, filter_size_3x3, depth_multiplier=1, scope = 'entry_block3_conv1')
+        layer = slim.batch_norm(layer, scope='entry_block3_batch_norm1')
+        
+        layer = tf.nn.relu(layer, name = 'entry_block3_relu1')
+        layer = slim.separable_conv2d(layer, 256, filter_size_3x3, depth_multiplier=1, scope ='entry_block3_conv2')
+        layer = slim.batch_norm(layer, scope= 'entry_block3_batch_norm2')
+        
+        layer = slim.max_pool2d(layer, filter_size_3x3, stride = 2, padding = 'same', scope = 'entry_block3_max_pool2d')
+        print ("layer_", layer.shape)
+        
+        layer = tf.math.add(layer, residual, name = "entry_block3_add")
+        
+        residual = slim.conv2d(layer, 728, filter_size_1x1, stride=[2,1], scope='entry_block3_res_conv')
+        residual = slim.batch_norm(residual, scope = 'entry_block3_res_batch_norm')
+
+        #block 4
+        layer = tf.nn.relu(layer, name = "entry_block4_relu")
+        layer = slim.separable_conv2d(layer, 728, filter_size_3x3, depth_multiplier=1, scope = 'entry_block4_conv1')
+        layer = slim.batch_norm(layer, scope='entry_block4_batch_norm1')
+        
+        layer = tf.nn.relu(layer, name = 'entry_block4_relu1')
+        layer = slim.separable_conv2d(layer, 728, filter_size_3x3, depth_multiplier=1, scope ='entry_block4_conv2')
+        layer = slim.batch_norm(layer, scope= 'entry_block4_batch_norm2')
+        
+        layer = slim.max_pool2d(layer, filter_size_3x3, stride = [2,1], padding = 'same', scope = 'entry_block4_max_pool2d')
+        
+        layer = tf.math.add(layer, residual, name = "entry_block4_add")
+        #end of Entry Flow
+
+        #__________Middle Flow start from here:____________
+        #in Middle flow we create several identical blocks and they all have same layers
+        #first we initialize number of blocks and then using for loop we create identical blocks 
+
+        blocks_num = 8
+        for blocks in range(blocks_num):
+            name_prefix = 'middle_block%s_'%(str(blocks+5))
+            residual = layer
+            layer = tf.nn.relu(layer, name=name_prefix+'relu1')
+            layer = slim.separable_conv2d(layer, 728,filter_size_3x3, depth_multiplier=1, scope = name_prefix+'conv1')
+            layer = slim.batch_norm(layer, scope=name_prefix+'batch_norm1')
+           
+            layer = tf.nn.relu(layer, name=name_prefix+'relu2')
+            layer = slim.separable_conv2d(layer, 728, filter_size_3x3, depth_multiplier=1, scope=name_prefix+'conv2')
+            layer = slim.batch_norm(layer, scope=name_prefix+'batch_norm2')
+            
+            layer = tf.nn.relu(layer, name=name_prefix+'relu3')
+            layer = slim.separable_conv2d(layer, 728, filter_size_3x3, depth_multiplier=1, scope=name_prefix+'conv3')
+            layer = slim.batch_norm(layer, scope=name_prefix+'batch_norm3')
+
+            layer = tf.math.add(layer, residual, name=name_prefix+'add')
+        #end of Middle Flow
+        #__________Exit Flow start from here:____________
+        #in Exit Flow blocks are smaller and in each block we increment the number of features 
+        #block 1
+        residual = slim.conv2d(layer, 1024, filter_size_1x1, stride=[2,1], scope = 'exit_block1_conv1')
+        residual = slim.batch_norm(residual, scope='exit_block1_res_batch_norm')
+
+        layer = tf.nn.relu(layer, name ='exit_block1_relu')
+        layer = slim.separable_conv2d(layer, 728, filter_size_3x3, depth_multiplier=1, scope='exit_block1_conv2')
+        layer = slim.batch_norm(layer, scope = 'exit_block1_batch_norm')
+
+        #block 2
+        layer = tf.nn.relu(layer, name ='exit_block2_relu')
+        layer = slim.separable_conv2d(layer, 1024, filter_size_3x3, depth_multiplier=1, scope='exit_block2_conv')
+        layer = slim.batch_norm(layer, scope = 'exit_block2_batch_norm')
+        
+        layer = slim.max_pool2d(layer, filter_size_3x3, stride = [2,1], padding = 'same', scope = 'exit_block2_max_pool2d')
+        layer = tf.math.add(layer, residual, name = 'exit_block2_add')
+        #block 3
+        layer = slim.separable_conv2d(layer, 1536, filter_size_3x3, depth_multiplier=1, scope = 'exit_block3_conv') 
+        layer = slim.batch_norm(layer, scope = 'exit_block3_batch_norm')
+        #block 4
+        layer = tf.nn.relu(layer, name = "exit_block4_relu")
+        layer = slim.separable_conv2d(layer, 2048, filter_size_3x3, depth_multiplier=1, scope='exit_block4_conv')
+        layer = slim.batch_norm(layer, scope = 'exit_block4_batch_norm')
+        layer = tf.nn.relu(layer, name='exit_block5_relu')
+        #layer = slim.avg_pool2d(layer, filter_size_10x10, stride=[2,1],scope = 'exit_block5_avg_pool')
+        layer = slim.conv2d(layer, 2048, [2,2], stride= [2,1], scope = 'exit_block5_conv1')
+        relu7 = tf.nn.relu(layer, name='last_relu')  # batch*1*25*512
+        
+        print("--------------------------relu----------------------------------------------------",relu7.shape)
+        return relu7
+#------------------------------ modified by U. S. Saidrasul -------------------------------
+
+    def __map_to_sequence(self, inputdata: tf.Tensor): # -> tf.Tensor:
         """ Implements the map to sequence part of the network.
 
         This is used to convert the CNN feature map to the sequence used in the stacked LSTM layers later on.
@@ -101,9 +185,9 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         assert shape[1] == 1  # H of the feature map must equal to 1
         return self.squeeze(inputdata=inputdata, axis=1)
 
-    def __sequence_label(self, inputdata: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+    def __sequence_label(self, inputdata: tf.Tensor):# -> Tuple[tf.Tensor, tf.Tensor]:
         """ Implements the sequence label part of the network
-
+        
         :param inputdata:
         :return:
         """
@@ -137,7 +221,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
 
         return rnn_out, raw_pred
 
-    def build_shadownet(self, inputdata: tf.Tensor) -> tf.Tensor:
+    def build_shadownet(self, inputdata: tf.Tensor): #-> tf.Tensor:
         """ Main routine to construct the network
 
         :param inputdata:
